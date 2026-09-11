@@ -8,6 +8,7 @@
 #include "netlog-manager.h"
 #include "netlog-state.h"
 #include "parse-util.h"
+#include "strv.h"
 
 /* Default severity LOG_NOTICE */
 #define JOURNAL_DEFAULT_SEVERITY LOG_PRI(LOG_NOTICE)
@@ -91,6 +92,7 @@ static int parse_fieldv(
 static int parse_journal_fields(Manager *m,
                                 char **message,
                                 char **identifier,
+                                char **unit,
                                 char **hostname,
                                 char **pid,
                                 char **facility,
@@ -101,7 +103,7 @@ static int parse_journal_fields(Manager *m,
         size_t length;
         int r;
         size_t hostname_len = 0, identifier_len = 0, message_len = 0, priority_len = 0, facility_len = 0,
-                structured_data_len = 0, msgid_len = 0, pid_len = 0;
+                structured_data_len = 0, msgid_len = 0, pid_len = 0, unit_len = 0;
         const ParseFieldVec fields[] = {
                 PARSE_FIELD_VEC_ENTRY("_PID=",                        pid,               &pid_len              ),
                 PARSE_FIELD_VEC_ENTRY("MESSAGE=",                     message,           &message_len          ),
@@ -109,6 +111,7 @@ static int parse_journal_fields(Manager *m,
                 PARSE_FIELD_VEC_ENTRY("_HOSTNAME=",                   hostname,          &hostname_len         ),
                 PARSE_FIELD_VEC_ENTRY("SYSLOG_FACILITY=",             facility,          &facility_len         ),
                 PARSE_FIELD_VEC_ENTRY("SYSLOG_IDENTIFIER=",           identifier,        &identifier_len       ),
+                PARSE_FIELD_VEC_ENTRY("_SYSTEMD_UNIT=",               unit,              &unit_len             ),
                 PARSE_FIELD_VEC_ENTRY("SYSLOG_STRUCTURED_DATA=",      structured_data,   &structured_data_len  ),
                 PARSE_FIELD_VEC_ENTRY("SYSLOG_MSGID",                 msgid,             &msgid_len            ),
         };
@@ -177,9 +180,26 @@ static int parse_syslog_facility(Manager *m, const char *facility, unsigned *fac
         return 0;
 }
 
+static int check_systemd_unit(Manager *m, const char* unit) {
+        int r;
+
+        if (!unit)
+                return 0;
+
+        if (m->excluded_systemd_units) {
+                r = strv_contains(m->excluded_systemd_units, unit);
+                if (r) {
+                        log_debug("Skipping message with excluded systemd unit %s.", unit);
+                        return 1; /* filtered */
+                }
+        }
+
+        return 0;
+}
+
 static int journal_read_input(Manager *m) {
         _cleanup_free_ char *facility = NULL, *identifier = NULL, *priority = NULL, *message = NULL, *pid = NULL,
-                *hostname = NULL, *structured_data = NULL, *msgid = NULL, *cursor = NULL;
+                *hostname = NULL, *structured_data = NULL, *msgid = NULL, *cursor = NULL, *unit = NULL;
         unsigned sev = JOURNAL_DEFAULT_SEVERITY;
         unsigned fac = JOURNAL_DEFAULT_FACILITY;
         struct timeval tv, *tvp = NULL;
@@ -195,7 +215,8 @@ static int journal_read_input(Manager *m) {
 
         log_debug("Reading from journal cursor=%s", cursor);
 
-        r = parse_journal_fields(m, &message, &identifier, &hostname, &pid, &facility, &priority, &structured_data, &msgid);
+        r = parse_journal_fields(m, &message, &identifier, &unit, &hostname, &pid, &facility, &priority,
+                                 &structured_data, &msgid);
         if (r < 0)
                 return log_error_errno(r, "Failed to get journal fields: %m");
         if (r == 0)
@@ -224,6 +245,10 @@ static int journal_read_input(Manager *m) {
                 return 0;
 
         r = parse_syslog_severity(m, priority, &sev);
+        if (r > 0) /* filtered */
+                return 0;
+
+        r = check_systemd_unit(m, unit);
         if (r > 0) /* filtered */
                 return 0;
 

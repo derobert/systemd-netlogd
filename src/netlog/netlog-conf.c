@@ -10,6 +10,7 @@
 #include "parse-util.h"
 #include "sd-resolve.h"
 #include "string-util.h"
+#include "strv.h"
 
 int config_parse_netlog_remote_address(const char *unit,
                                        const char *filename,
@@ -279,6 +280,44 @@ int config_parse_syslog_level(const char *unit,
         }
 
         m->excluded_syslog_levels = val;
+        return 0;
+}
+
+int config_parse_string_list(const char *unit,
+                             const char *filename,
+                             unsigned line,
+                             const char *section,
+                             unsigned section_line,
+                             const char *lvalue,
+                             int ltype,
+                             const char *rvalue,
+                             void *data,
+                             void *userdata) {
+        char **strv = strv_new(NULL, NULL);
+        char ***strv_p = data;
+        int r;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+        assert(strv_p);
+
+        for (const char *p = rvalue;;) {
+                char *word = NULL;
+
+                r = extract_first_word(&p, &word, NULL, EXTRACT_QUOTES|EXTRACT_RELAX);
+                if (r < 0) {
+                        strv_free(strv);
+                        log_syntax(unit, LOG_WARNING, filename, line, r, "Failed to parse %s= specifier '%s', ignoring: %m", lvalue, rvalue);
+                        return 0;
+                }
+                if (r == 0)
+                        break;
+
+                strv_push(&strv, word);
+        }
+
+        *strv_p = strv;
         return 0;
 }
 

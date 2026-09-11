@@ -105,6 +105,7 @@ struct Manager {
 
         uint32_t excluded_syslog_facilities;
         uint8_t excluded_syslog_levels;
+        char **excluded_systemd_units;
 
         /* journal  */
         int journal_watch_fd;
