@@ -3,6 +3,7 @@
 #include "netlog-journal.h"
 
 #include <systemd/sd-journal.h>
+#include <systemd/sd-daemon.h>
 
 #include "alloc-util.h"
 #include "netlog-manager.h"
@@ -266,6 +267,8 @@ static int journal_read_input(Manager *m) {
 static int journal_process_input(Manager *m) {
         _cleanup_free_ char *cursor = NULL;
         int r;
+        unsigned count = 0;
+        bool delay = false;
 
         assert(m);
         assert(m->journal);
@@ -287,6 +290,11 @@ static int journal_process_input(Manager *m) {
 
                         break;
                 }
+                if (++count >= m->chunk_max_line_count) {
+                        log_debug("Reached chunk max line count %u, delaying next read.", m->chunk_max_line_count);
+                        delay = true;
+                        break;
+                }
         }
 
         r = sd_journal_get_cursor(m->journal, &cursor);
@@ -299,7 +307,38 @@ static int journal_process_input(Manager *m) {
         m->last_cursor = cursor;
         cursor = NULL;
 
-        return state_update_cursor(m);
+        r = state_update_cursor(m);
+        if (r < 0)
+                return r; /* error */
+        else if (delay)
+                return 1; /* delay next read */
+        else
+                return r;
+}
+
+int journal_process_with_delay(Manager *m) {
+        int r, input_r;
+
+        input_r = journal_process_input(m);
+        if (input_r == 1) {
+                log_trace("Pausing journal for a delay.");
+                r = sd_event_source_set_time_relative(m->event_journal_delay, m->chunk_delay_interval);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to set next chunk timer event: %m");
+                r = sd_event_source_set_enabled(m->event_journal_delay, SD_EVENT_ONESHOT);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to enable next chunk timer event: %m");
+                r = sd_event_source_set_enabled(m->event_journal_input, SD_EVENT_OFF);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to disable journal input event: %m");
+                sd_notify(false, "STATUS=Paused (inter-chunk delay).");
+        } else {
+                r = sd_event_source_set_enabled(m->event_journal_input, SD_EVENT_ON);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to enable journal input event: %m");
+                sd_notify(false, "STATUS=Ready.");
+        }
+        return input_r;
 }
 
 int journal_event_handler(sd_event_source *event, int fd, uint32_t revents, void *userp) {
@@ -330,7 +369,17 @@ int journal_event_handler(sd_event_source *event, int fd, uint32_t revents, void
         if (r == SD_JOURNAL_NOP)
                 return 0;
 
-        return journal_process_input(m);
+        return journal_process_with_delay(m);
+}
+
+int journal_event_resume(sd_event_source *event, uint64_t usec, void *userp) {
+        Manager *m = userp;
+
+        assert(m);
+        assert(m->journal);
+        log_trace("Resuming journal input after delay.");
+
+        return journal_process_with_delay(m);
 }
 
 void journal_close_input(Manager *m) {
@@ -386,6 +435,10 @@ int journal_monitor_listen(Manager *m) {
                             events, journal_event_handler, m);
         if (r < 0)
                 return log_error_errno(r, "Failed to register input event: %m");
+
+        r = sd_event_add_time(m->event, &m->event_journal_delay, CLOCK_MONOTONIC, UINT64_MAX, 0, journal_event_resume, m);
+        if (r < 0)
+                return log_error_errno(r, "Failed to register timer-based resume send event: %m");
 
         /* ignore failure */
         if (!m->last_cursor)

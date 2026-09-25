@@ -302,6 +302,9 @@ int config_parse_string_list(const char *unit,
         assert(rvalue);
         assert(strv_p);
 
+        if (!strv)
+                return log_oom();
+
         for (const char *p = rvalue;;) {
                 char *word = NULL;
 
@@ -314,10 +317,50 @@ int config_parse_string_list(const char *unit,
                 if (r == 0)
                         break;
 
-                strv_push(&strv, word);
+                r = strv_consume(&strv, word);
+                if (r < 0) {
+                        strv_free(strv);
+                        return log_oom();
+                }
         }
 
+        if (*strv_p)
+                strv_free(*strv_p);
         *strv_p = strv;
+        return 0;
+}
+
+int config_parse_chunk_max_line_count(const char *unit,
+                                      const char *filename,
+                                      unsigned line,
+                                      const char *section,
+                                      unsigned section_line,
+                                      const char *lvalue,
+                                      int ltype,
+                                      const char *rvalue,
+                                      void *data,
+                                      void *userdata) {
+        unsigned *line_count = data;
+        unsigned u;
+        int r;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+        assert(data);
+        assert(userdata);
+
+        r = safe_atou(rvalue, &u);
+        if (r < 0) {
+                log_syntax(unit, LOG_WARNING, filename, line, -r, "Failed to parse '%s=%s', ignoring.", lvalue, rvalue);
+                return 0;
+        }
+        if (u == 0) {
+                log_syntax(unit, LOG_WARNING, filename, line, 0, "%s= must be greater than zero, ignoring.", lvalue);
+                return 0;
+        }
+
+        *line_count = u;
         return 0;
 }
 
