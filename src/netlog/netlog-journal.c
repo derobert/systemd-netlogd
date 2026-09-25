@@ -124,7 +124,7 @@ static int parse_journal_fields(Manager *m,
                 return 0;
         }
 
-        return r;
+        return r < 0 ? r : 1;
 }
 
 static int parse_syslog_severity(Manager *m, const char *priority, unsigned *sev) {
