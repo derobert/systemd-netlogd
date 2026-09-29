@@ -20,5 +20,5 @@
 #ExcludeSyslogLevel=
 #ExcludeUnits=
 #ChunkMaxLineCount=100
-#ChunkDelaySec=10
+#ChunkDelaySec=1
 
